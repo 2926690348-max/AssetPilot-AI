@@ -51,6 +51,7 @@ import {
   ComposedChart
 } from 'recharts';
 import { Asset, ChatMessage, YearlyStats } from './types';
+import { INITIAL_ASSETS } from './data';
 
 export default function App() {
   // Brand customization state (User prompt requirement: 5 Corporate AI product names)
@@ -64,10 +65,10 @@ export default function App() {
   const [selectedProductIdx, setSelectedProductIdx] = useState(0);
   const currentProduct = productNames[selectedProductIdx];
 
-  // Global state for industrial assets
-  const [assets, setAssets] = useState<Asset[]>([]);
+  // Global state for industrial assets initialized with high-quality mock data for Vercel/SPA mode
+  const [assets, setAssets] = useState<Asset[]>(INITIAL_ASSETS);
   const [selectedAssetId, setSelectedAssetId] = useState<string>('EQ-2026-001');
-  const [loadingAssets, setLoadingAssets] = useState<boolean>(true);
+  const [loadingAssets, setLoadingAssets] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'decision' | 'lcc' | 'chat' | 'report' | 'architecture'>('dashboard');
 
   // UI state
@@ -88,19 +89,18 @@ export default function App() {
   const [efficiencyBoost, setEfficiencyBoost] = useState(30);
   const [downtimeCostHour, setDowntimeCostHour] = useState(4500);
 
-  // Fetch initial assets list from API
+  // Fetch initial assets list from API if backend is running
   const fetchAssets = async () => {
-    setLoadingAssets(true);
     try {
       const res = await fetch('/api/assets');
       if (res.ok) {
         const data = await res.json();
-        setAssets(data);
+        if (data && Array.isArray(data) && data.length > 0) {
+          setAssets(data);
+        }
       }
     } catch (e) {
-      console.error('Error fetching assets:', e);
-    } finally {
-      setLoadingAssets(false);
+      console.log('Running in client-side mode (e.g., Vercel static deployment) using default mock datasets.');
     }
   };
 
@@ -141,10 +141,12 @@ export default function App() {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
-  // Handle asset approval action
+  // Handle asset approval action (supports API post with local fallback for static Vercel build)
   const handleApprove = async (action: 'repair' | 'replace') => {
     if (!activeAsset) return;
     setSubmittingApproval(true);
+    let apiSuccess = false;
+
     try {
       const res = await fetch(`/api/assets/${activeAsset.id}/approve`, {
         method: 'POST',
@@ -157,42 +159,63 @@ export default function App() {
       });
       if (res.ok) {
         const result = await res.json();
-        // Update local asset array
+        // Update asset from server state
         setAssets(prev => prev.map(a => a.id === activeAsset.id ? result.asset : a));
-        setApprovalComment('');
-        // Trigger modal state success notification or quick success prompt
-        alert(`审批流成功送达！已批准设备 ${activeAsset.id} 执行: ${action === 'repair' ? '专业大修' : '报废折旧与新购置换'}`);
+        apiSuccess = true;
       }
     } catch (e) {
-      console.error(e);
-    } finally {
-      setSubmittingApproval(false);
+      console.log('Backend is offline. Executing client-side fallback state update.');
     }
+
+    if (!apiSuccess) {
+      // Local state machine update for static deployment (Vercel)
+      setAssets(prev => prev.map(a => {
+        if (a.id === activeAsset.id) {
+          const updated = { ...a };
+          updated.status = action === 'repair' ? 'repair_approved' : 'replace_approved';
+          if (!updated.approvalHistory) updated.approvalHistory = [];
+          updated.approvalHistory.push({
+            user: approverName,
+            action: action === 'repair' ? '批准中大修留用' : '批准采购置换新机',
+            date: new Date().toISOString().split('T')[0],
+            comment: approvalComment || `（本地决策）批准该资产执行${action === 'repair' ? '大修恢复方案' : '报废置换方案'}`
+          });
+          return updated;
+        }
+        return a;
+      }));
+    }
+
+    setApprovalComment('');
+    alert(`审批流成功提交！设备 ${activeAsset.id} 已执行决策: ${action === 'repair' ? '中大修留用' : '折旧报废与采购置换'}`);
+    setSubmittingApproval(false);
   };
 
-  // Generate / Refresh AI Advisory report via server Gemini SDK
+  // Generate / Refresh AI Advisory report via server Gemini SDK or local fallback
   const handleGenerateReport = async () => {
     if (!activeAsset) return;
     setGeneratingReport(true);
+    let apiSuccess = false;
     try {
       const res = await fetch(`/api/assets/${activeAsset.id}/generate-report`, {
         method: 'POST'
       });
-      const data = await res.json();
       if (res.ok) {
+        const data = await res.json();
         setReportText(data.report);
         // Sync back to local assets state
         setAssets(prev => prev.map(a => a.id === activeAsset.id ? { ...a, aiDetailedReport: data.report } : a));
-      } else {
-        alert('AI 生成报告超时，已为您展示系统预制的埃森哲高级咨询报告。');
-        setReportText(activeAsset.aiDetailedReport || '');
+        apiSuccess = true;
       }
     } catch (e) {
-      console.error(e);
-      alert('AI 诊断报告生成失败。');
-    } finally {
-      setGeneratingReport(false);
+      console.log('Backend report generator offline. Loading pre-compiled high-quality Deloitte advisory report.');
     }
+
+    if (!apiSuccess) {
+      setReportText(activeAsset.aiDetailedReport || '');
+      alert('已为您加载该资产对应的德勤级数字咨询诊断报告。');
+    }
+    setGeneratingReport(false);
   };
 
   // Handle chatbot send message to backend Gemini
@@ -239,11 +262,43 @@ export default function App() {
         throw new Error(data.error);
       }
     } catch (err) {
-      console.error(err);
+      console.log('Backend chat offline, using interactive local expert-rule adviser:', err);
+      
+      const textLower = textToSend.toLowerCase();
+      let reply = `您好！我是 **APEX-Agent** 资产决策分析助手。由于目前处于离线部署环境，我已激活本地专家规则引擎。
+      
+关于针对设备 **${activeAsset.name} (${activeAsset.id})** 的专项决策提问，以下为您进行量化拆解：`;
+
+      if (textLower.includes('为什么') || textLower.includes('理由') || textLower.includes('原因') || textLower.includes('决策')) {
+        reply += `\n\n**决策倾向核心原因**：
+1. **重置经济学比率高**：该设备的预计大修费为 ¥${activeAsset.estimatedRepairCost.toLocaleString()} 元，而全新采购仅需 ¥${activeAsset.newPurchasePrice.toLocaleString()} 元。单次维修金额高昂，财务效益不划算。
+2. **大修黑洞效应**：其历史累计维修费已达 ¥${activeAsset.cumulativeRepairCost.toLocaleString()} 元（占设备原值的 ${(activeAsset.cumulativeRepairCost / activeAsset.originalValue * 100).toFixed(1)}%）。继续追加大修投入，将彻底掉入“无效资产超期服役”的黑洞。
+3. **停机损失触目惊心**：过去一年内非计划停机高达 **${activeAsset.downtimeHoursPastYear}小时**。以车间损失标准计算，累计蚕食了 ¥${(activeAsset.downtimeHoursPastYear * activeAsset.downtimeCostPerClass).toLocaleString()} 元的生产毛利！`;
+      } else if (textLower.includes('成本') || textLower.includes('lcc') || textLower.includes('财务') || textLower.includes('钱') || textLower.includes('价格') || textLower.includes('费用')) {
+        reply += `\n\n**5年生命周期总成本 (LCC) 精细测算**：
+- **留用大修模式**：不仅面临本次 ¥${activeAsset.estimatedRepairCost.toLocaleString()} 元支出，未来5年高昂的能耗和频繁的计划外二次停机，预计会导致总计 ¥${(activeAsset.estimatedRepairCost * 2.5).toLocaleString()} 元以上的综合消耗。
+- **采购置换模式**：采购新设备可节省近 ${efficiencyBoost}% 的综合运行能效，停机率下降 95% 以上，从而在 **1.5 - 2年** 左右回收全部投资，长远看可为企业净节省超百万的资本开支（CAPEX/OPEX）。`;
+      } else if (textLower.includes('安全') || textLower.includes('风险') || textLower.includes('红线') || textLower.includes('爆炸') || textLower.includes('隐患') || textLower.includes('合规')) {
+        reply += `\n\n**安全风险评估及合规红线**：
+- **安全等级**：${activeAsset.safetyRisk === 'high' ? '🔴 RED ALERT (高危带病状态)' : '🟢 GREEN (常规故障)'}
+- **现场隐患**：*${activeAsset.safetyRiskReason}*
+- **安监一票否决**：特种设备对于由于阀腔裂纹、渗油、绝缘老化等故障导致的年检不合规，属于国家强令禁止运行的红线。继续大修极易复发并带来巨大的责任事故隐患，因此从安全合规角度，强烈建议走报废报置流程！`;
+      } else {
+        reply += `\n\n**本地资产画像综述**：
+- **资产大类**: ${activeAsset.category}
+- **推荐决策**: 【**${activeAsset.aiRecommendation === 'replace' ? '报废重置采购新设备' : '中大修精密保养'}**】 (AI推荐评分 ${activeAsset.aiScore}分)
+- **安全评级**: ${activeAsset.safetyRisk === 'high' ? '高风险运行' : '安全处于绿色受控区间'}
+
+您可以试着这样问我：
+1. “**为什么**推荐执行这个决策？”
+2. “它的 **LCC 成本** 测算对比是怎样的？”
+3. “它存在哪些 **安全或合规风险** 隐患？”`;
+      }
+
       setChatMessages(prev => [...prev, {
         id: Math.random().toString(),
         role: 'assistant',
-        content: `连接专家模型异常。根据本地预案，设备 **${activeAsset.name}** 当前处于 **${activeAsset.safetyRisk === 'high' ? '高风险带病运行' : '机械磨损耗损期'}**。其重置比例过高。建议您优先使用上方“AI分析报告”标签卡查看该资产的5年总拥有成本 LCC 仿真表格。`,
+        content: reply,
         timestamp: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
       }]);
     } finally {
