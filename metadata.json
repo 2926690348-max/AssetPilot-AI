@@ -1,0 +1,6 @@
+{
+  "name": "ApexAsset AI",
+  "description": "企业资产全生命周期智能决策平台 - 基于数据驱动与AI Agent的维修与新购智能决策校验系统",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
